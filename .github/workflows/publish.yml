@@ -1,0 +1,27 @@
+name: Publish to npm
+
+# Publishes @plutopay/node on a version tag using npm OIDC trusted publishing —
+# no long-lived NPM_TOKEN, which sidesteps npm's 2FA/token restrictions.
+# One-time setup: on npmjs.com, configure this repo + workflow as a trusted
+# publisher for @plutopay/node.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write # required for OIDC / provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm test
+      - run: npm publish --provenance --access public

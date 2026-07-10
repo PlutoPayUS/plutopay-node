@@ -1,0 +1,1407 @@
+openapi: 3.1.0
+info:
+  title: PlutoPay API
+  version: "2026-07-10"
+  description: |
+    The PlutoPay API is organized around REST. It uses predictable
+    resource-oriented URLs, returns JSON, and relies on standard HTTP verbs and
+    status codes.
+
+    ## Conventions
+    - **Money** — every monetary value is an integer in the smallest currency
+      unit (e.g. cents for USD). `4750` means `$47.50`.
+    - **Authentication** — pass your secret API key as a Bearer token:
+      `Authorization: Bearer sk_test_...`. Publishable keys (`pk_...`) are used
+      only client-side with the checkout/Elements flows and cannot call secret
+      endpoints.
+    - **Idempotency** — supply an `Idempotency-Key` header on any POST to make it
+      safe to retry. The key is echoed back on the response.
+    - **Errors** — every error is a single canonical envelope:
+      `{ "error": { "type": ..., "message": ..., "code"?: ..., "param"?: ... } }`.
+    - **Rate limits** — responses carry `X-RateLimit-Limit` and
+      `X-RateLimit-Remaining`; a `429` adds `Retry-After`.
+    - **Test mode** — keys prefixed `sk_test_` / `pk_test_` operate on isolated
+      test data and Stripe test infrastructure.
+  contact:
+    name: PlutoPay Support
+    url: https://plutopayus.com
+  license:
+    name: Proprietary
+    url: https://plutopayus.com
+servers:
+  - url: https://plutopayus.com/api
+    description: Production
+security:
+  - bearerAuth: []
+tags:
+  - name: Transactions
+    description: Create, capture, cancel, and list payments.
+  - name: Refunds
+    description: Refund captured payments (full or partial).
+  - name: Checkout
+    description: Hosted checkout sessions.
+  - name: Payment Links
+    description: Long-lived shareable payment links.
+  - name: Terminal
+    description: Card-present payments and reader management.
+  - name: Customers
+    description: Customer records for saved details and reporting.
+  - name: Payouts
+    description: Settlement payouts to the connected bank account.
+  - name: Disputes
+    description: Chargebacks and disputes.
+  - name: Webhook Endpoints
+    description: Manage endpoints that receive event notifications.
+  - name: Merchant
+    description: Account and service metadata.
+
+paths:
+  /v1/health:
+    get:
+      operationId: getHealth
+      tags: [Merchant]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /v1/merchant:
+    get:
+      operationId: getMerchant
+      tags: [Merchant]
+      summary: Retrieve the authenticated merchant
+      responses:
+        "200":
+          description: The merchant that owns the API key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Merchant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/transactions:
+    get:
+      operationId: listTransactions
+      tags: [Transactions]
+      summary: List transactions
+      parameters:
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/PerPage" }
+        - in: query
+          name: search
+          schema: { type: string }
+          description: Match against reference, description, or receipt_email.
+        - in: query
+          name: status
+          schema: { $ref: "#/components/schemas/TransactionStatus" }
+        - in: query
+          name: payment_method_type
+          schema: { type: string }
+        - in: query
+          name: date_from
+          schema: { type: string, format: date }
+        - in: query
+          name: date_to
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: A paginated list of transactions
+          headers:
+            X-RateLimit-Limit: { $ref: "#/components/headers/RateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/RateLimitRemaining" }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Transaction" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      operationId: createPayment
+      tags: [Transactions]
+      summary: Create a payment
+      description: |
+        Creates a PaymentIntent-backed transaction. Also available at
+        `POST /v1/payment-intents` (identical alias). Returns a `client_secret`
+        for confirming with Stripe.js Elements / Payment Element.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTransactionRequest" }
+      responses:
+        "201":
+          description: Transaction created
+          headers:
+            Idempotency-Key: { $ref: "#/components/headers/IdempotencyKeyEcho" }
+            X-RateLimit-Limit: { $ref: "#/components/headers/RateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/RateLimitRemaining" }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: "#/components/schemas/Transaction"
+                      - type: object
+                        properties:
+                          client_secret:
+                            type: string
+                            description: Present when the intent must be confirmed client-side.
+        "200":
+          description: Idempotent replay — the original transaction is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Transaction" }
+                  message: { type: string }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/payment-intents:
+    post:
+      operationId: createPaymentIntent
+      tags: [Transactions]
+      summary: Create a payment (alias of POST /v1/transactions)
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTransactionRequest" }
+      responses:
+        "201":
+          description: Transaction created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Transaction" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /v1/transactions/{id}:
+    get:
+      operationId: getTransaction
+      tags: [Transactions]
+      summary: Retrieve a transaction
+      parameters: [ { $ref: "#/components/parameters/PathId" } ]
+      responses:
+        "200":
+          description: The transaction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Transaction" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/transactions/{id}/capture:
+    post:
+      operationId: captureTransaction
+      tags: [Transactions]
+      summary: Capture a previously authorized payment
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: integer
+                  minimum: 1
+                  description: Amount to capture in cents. Defaults to the full authorized amount.
+      responses:
+        "200":
+          description: Captured transaction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Transaction" }
+        "400":
+          description: Capture failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/transactions/{id}/cancel:
+    post:
+      operationId: cancelTransaction
+      tags: [Transactions]
+      summary: Cancel an uncaptured payment
+      parameters:
+        - { $ref: "#/components/parameters/PathId" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: Canceled transaction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Transaction" }
+        "400":
+          description: Cancel failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/transactions/{transaction}/refunds:
+    post:
+      operationId: createRefund
+      tags: [Refunds]
+      summary: Refund a transaction
+      description: |
+        Refunds a captured payment (full or partial). The application fee is
+        refunded and the connected-account transfer reversed proportionally.
+      parameters:
+        - in: path
+          name: transaction
+          required: true
+          schema: { type: string, format: uuid }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateRefundRequest" }
+      responses:
+        "200":
+          description: Refund applied; the updated transaction is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Transaction" }
+        "400":
+          description: Not refundable or amount exceeds refundable balance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/checkout/sessions:
+    get:
+      operationId: listCheckoutSessions
+      tags: [Checkout]
+      summary: List checkout sessions
+      parameters: [ { $ref: "#/components/parameters/Page" } ]
+      responses:
+        "200":
+          description: A paginated list of checkout sessions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/CheckoutSession" }
+    post:
+      operationId: createCheckoutSession
+      tags: [Checkout]
+      summary: Create a checkout session
+      description: Creates a hosted checkout session and returns its payment URL.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCheckoutSessionRequest" }
+      responses:
+        "201":
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/CheckoutSession" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "400":
+          description: Checkout error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/checkout/sessions/{id}:
+    get:
+      operationId: getCheckoutSession
+      tags: [Checkout]
+      summary: Retrieve a checkout session
+      parameters: [ { $ref: "#/components/parameters/PathId" } ]
+      responses:
+        "200":
+          description: The checkout session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/CheckoutSession" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/payment-links:
+    get:
+      operationId: listPaymentLinks
+      tags: [Payment Links]
+      summary: List payment links
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: A paginated list of payment links
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/PaymentLink" }
+    post:
+      operationId: createPaymentLink
+      tags: [Payment Links]
+      summary: Create a payment link
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePaymentLinkRequest" }
+      responses:
+        "201":
+          description: Payment link created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentLink" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /v1/payment-links/{payment_link}:
+    get:
+      operationId: getPaymentLink
+      tags: [Payment Links]
+      summary: Retrieve a payment link
+      parameters:
+        - in: path
+          name: payment_link
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The payment link
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentLink" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      operationId: deletePaymentLink
+      tags: [Payment Links]
+      summary: Deactivate a payment link
+      parameters:
+        - in: path
+          name: payment_link
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentLink" }
+        "400":
+          description: Cannot deactivate a completed payment link.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/terminal/connection-token:
+    post:
+      operationId: createTerminalConnectionToken
+      tags: [Terminal]
+      summary: Create a Terminal connection token
+      responses:
+        "200":
+          description: Connection token for the Terminal SDK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      secret: { type: string }
+
+  /v1/terminal/create-payment:
+    post:
+      operationId: createTerminalPayment
+      tags: [Terminal]
+      summary: Create a Terminal PaymentIntent
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { type: integer, minimum: 50, description: Amount in cents. }
+                currency: { type: string, minLength: 3, maxLength: 3, default: usd }
+                terminal_id: { type: string, format: uuid }
+                description: { type: string, maxLength: 500 }
+                customer_id: { type: string, format: uuid }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        "201":
+          description: Terminal PaymentIntent created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Transaction" }
+        "400":
+          description: Terminal error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/terminal/process-payment:
+    post:
+      operationId: processTerminalPayment
+      tags: [Terminal]
+      summary: Process a payment on a reader
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_intent_id, reader_id]
+              properties:
+                payment_intent_id: { type: string }
+                reader_id: { type: string }
+      responses:
+        "200":
+          description: Processing initiated on the reader
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: Terminal process error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/terminal/simulate-payment:
+    post:
+      operationId: simulateTerminalPayment
+      tags: [Terminal]
+      summary: Simulate a reader tap (test mode only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reader_id]
+              properties:
+                reader_id: { type: string }
+      responses:
+        "200":
+          description: Simulated tap dispatched
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: Simulation only available in test mode.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /v1/terminal/readers:
+    get:
+      operationId: listTerminalReaders
+      tags: [Terminal]
+      summary: List Terminal readers
+      responses:
+        "200":
+          description: Registered readers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { type: object } }
+
+  /v1/terminals:
+    get:
+      operationId: listTerminals
+      tags: [Terminal]
+      summary: List terminals
+      parameters: [ { $ref: "#/components/parameters/Page" } ]
+      responses:
+        "200":
+          description: A paginated list of terminals
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationEnvelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Terminal" } }
+    post:
+      operationId: createTerminal
+      tags: [Terminal]
+      summary: Register a terminal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 255 }
+                registration_code: { type: string }
+                location_name: { type: string, maxLength: 255 }
+                location_address: { type: string, maxLength: 500 }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        "201":
+          description: Terminal registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Terminal" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /v1/terminals/{terminal}:
+    get:
+      operationId: getTerminal
+      tags: [Terminal]
+      summary: Retrieve a terminal
+      parameters: [ { in: path, name: terminal, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        "200":
+          description: The terminal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Terminal" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: updateTerminal
+      tags: [Terminal]
+      summary: Update a terminal
+      parameters: [ { in: path, name: terminal, required: true, schema: { type: string, format: uuid } } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 255 }
+                location_name: { type: string, maxLength: 255 }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Updated terminal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Terminal" }
+    delete:
+      operationId: deleteTerminal
+      tags: [Terminal]
+      summary: Delete a terminal
+      parameters: [ { in: path, name: terminal, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+
+  /v1/customers:
+    get:
+      operationId: listCustomers
+      tags: [Customers]
+      summary: List customers
+      parameters:
+        - { $ref: "#/components/parameters/Page" }
+        - in: query
+          name: size
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: A paginated list of customers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationEnvelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Customer" } }
+    post:
+      operationId: createCustomer
+      tags: [Customers]
+      summary: Create a customer
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CustomerWriteRequest" }
+      responses:
+        "201":
+          description: Customer created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Customer" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /v1/customers/{customer}:
+    get:
+      operationId: getCustomer
+      tags: [Customers]
+      summary: Retrieve a customer
+      parameters: [ { in: path, name: customer, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        "200":
+          description: The customer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Customer" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: updateCustomer
+      tags: [Customers]
+      summary: Update a customer
+      parameters: [ { in: path, name: customer, required: true, schema: { type: string, format: uuid } } ]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CustomerWriteRequest" }
+      responses:
+        "200":
+          description: Updated customer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Customer" }
+    delete:
+      operationId: deleteCustomer
+      tags: [Customers]
+      summary: Delete a customer
+      parameters: [ { in: path, name: customer, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+
+  /v1/payouts:
+    get:
+      operationId: listPayouts
+      tags: [Payouts]
+      summary: List payouts
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: per_page
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: A paginated list of payouts
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationEnvelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Payout" } }
+
+  /v1/payouts/{id}:
+    get:
+      operationId: getPayout
+      tags: [Payouts]
+      summary: Retrieve a payout
+      parameters: [ { $ref: "#/components/parameters/PathId" } ]
+      responses:
+        "200":
+          description: The payout
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Payout" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/disputes:
+    get:
+      operationId: listDisputes
+      tags: [Disputes]
+      summary: List disputes
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: per_page
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: A paginated list of disputes
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationEnvelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Dispute" } }
+
+  /v1/disputes/{id}:
+    get:
+      operationId: getDispute
+      tags: [Disputes]
+      summary: Retrieve a dispute
+      parameters: [ { $ref: "#/components/parameters/PathId" } ]
+      responses:
+        "200":
+          description: The dispute
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Dispute" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/webhook-endpoints:
+    get:
+      operationId: listWebhookEndpoints
+      tags: [Webhook Endpoints]
+      summary: List webhook endpoints
+      parameters: [ { $ref: "#/components/parameters/Page" } ]
+      responses:
+        "200":
+          description: A paginated list of webhook endpoints
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationEnvelope"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/WebhookEndpoint" } }
+    post:
+      operationId: createWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Create a webhook endpoint
+      description: The signing `secret` is returned once, on creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, maxLength: 500 }
+                events:
+                  type: array
+                  items: { $ref: "#/components/schemas/WebhookEventType" }
+                description: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: Webhook endpoint created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: "#/components/schemas/WebhookEndpoint"
+                      - type: object
+                        properties:
+                          secret:
+                            type: string
+                            description: Signing secret (whsec_...). Shown only here.
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /v1/webhook-endpoints/{webhook_endpoint}:
+    get:
+      operationId: getWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Retrieve a webhook endpoint
+      parameters: [ { in: path, name: webhook_endpoint, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        "200":
+          description: The webhook endpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/WebhookEndpoint" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: updateWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Update a webhook endpoint
+      parameters: [ { in: path, name: webhook_endpoint, required: true, schema: { type: string, format: uuid } } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string, format: uri, maxLength: 500 }
+                events:
+                  type: array
+                  items: { $ref: "#/components/schemas/WebhookEventType" }
+                status: { type: string, enum: [active, disabled] }
+                description: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Updated webhook endpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/WebhookEndpoint" }
+    delete:
+      operationId: deleteWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Delete a webhook endpoint
+      parameters: [ { in: path, name: webhook_endpoint, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+
+  /v1/webhook-endpoints/{endpoint}/test:
+    post:
+      operationId: testWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Send a test event to a webhook endpoint
+      parameters: [ { in: path, name: endpoint, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        "200":
+          description: Test event dispatched
+          content:
+            application/json:
+              schema: { type: object }
+
+webhooks:
+  event:
+    post:
+      summary: Event delivery
+      description: |
+        PlutoPay POSTs a signed JSON event to each configured webhook endpoint.
+        Verify the `PlutoPay-Signature` header (HMAC-SHA256, `t=`/`v1=` format)
+        against the endpoint's signing secret before trusting the payload.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookEvent" }
+      responses:
+        "200":
+          description: Return 2xx to acknowledge receipt.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Secret API key (`sk_live_...` / `sk_test_...`) as a Bearer token.
+
+  parameters:
+    Page:
+      in: query
+      name: page
+      schema: { type: integer, minimum: 1, default: 1 }
+    PerPage:
+      in: query
+      name: per_page
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    PathId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      schema: { type: string, maxLength: 255 }
+      description: Makes the POST safe to retry. Echoed back on the response.
+
+  headers:
+    RateLimitLimit:
+      schema: { type: integer }
+      description: Requests permitted per minute for this bucket.
+    RateLimitRemaining:
+      schema: { type: integer }
+      description: Requests remaining in the current window.
+    IdempotencyKeyEcho:
+      schema: { type: string }
+      description: Echoes the Idempotency-Key supplied on the request.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example: { error: { type: authentication_error, message: Invalid API key. } }
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example: { error: { type: not_found, message: The requested resource does not exist., code: resource_missing } }
+    ValidationError:
+      description: One or more request parameters were invalid.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example: { error: { type: validation_error, message: The amount field is required., code: parameter_invalid, param: amount } }
+    RateLimited:
+      description: Too many requests.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+        X-RateLimit-Limit:
+          schema: { type: integer }
+        X-RateLimit-Remaining:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+          example: { error: { type: rate_limit_error, message: Too many requests. Please slow down and retry shortly. } }
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              description: Coarse error category.
+              enum:
+                - authentication_error
+                - permission_error
+                - invalid_request_error
+                - validation_error
+                - not_found
+                - method_not_allowed
+                - conflict
+                - rate_limit_error
+                - api_error
+                - checkout_error
+                - terminal_error
+                - terminal_payment_error
+                - terminal_process_error
+                - refund_error
+                - payment_link_error
+                - capture_error
+                - cancel_error
+                - simulation_error
+                - invalid_request
+                - invalid_state
+            message: { type: string }
+            code:
+              type: string
+              description: Machine-readable code, when applicable.
+            param:
+              type: string
+              description: The offending parameter, for validation errors.
+
+    PaginationEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items: {}
+        totalCount: { type: integer }
+        page: { type: integer }
+        size: { type: integer }
+        lastPage: { type: integer }
+
+    Money:
+      type: integer
+      format: int64
+      description: Amount in the smallest currency unit (e.g. cents).
+      example: 4750
+
+    TransactionStatus:
+      type: string
+      enum: [pending, processing, succeeded, failed, canceled, refunded, partially_refunded, disputed]
+
+    Transaction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string, example: txn_a1b2c3 }
+        type: { type: string, example: payment }
+        status: { $ref: "#/components/schemas/TransactionStatus" }
+        status_badge: { type: string, description: UI hint (success/warning/danger/...). }
+        amount: { $ref: "#/components/schemas/Money" }
+        amount_refunded: { $ref: "#/components/schemas/Money" }
+        currency: { type: string, example: usd }
+        payment_method_type: { type: string, example: card }
+        card_brand: { type: [string, "null"] }
+        card_last_four: { type: [string, "null"] }
+        description: { type: [string, "null"] }
+        receipt_email: { type: [string, "null"] }
+        source: { type: [string, "null"] }
+        is_test: { type: boolean }
+        customer_id: { type: [string, "null"], format: uuid }
+        terminal_id: { type: [string, "null"], format: uuid }
+        metadata: { type: [object, "null"], additionalProperties: true }
+        captured_at: { type: [string, "null"], format: date-time }
+        failed_at: { type: [string, "null"], format: date-time }
+        refunded_at: { type: [string, "null"], format: date-time }
+        disputed_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateTransactionRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount: { type: integer, minimum: 50, description: Amount in cents. }
+        currency: { type: string, minLength: 3, maxLength: 3, default: usd }
+        payment_method: { type: string }
+        payment_method_type: { type: string, enum: [card, wallet, bank_transfer, ach, terminal] }
+        confirm: { type: boolean }
+        capture_method: { type: string, enum: [automatic, manual] }
+        customer_id: { type: string, format: uuid }
+        description: { type: string, maxLength: 500 }
+        receipt_email: { type: string, format: email }
+        return_url: { type: string, format: uri }
+        metadata: { type: object, additionalProperties: true }
+        idempotency_key:
+          type: string
+          maxLength: 255
+          deprecated: true
+          description: Legacy body param; prefer the Idempotency-Key header.
+        billing_address: { type: object, additionalProperties: true }
+        shipping_address: { type: object, additionalProperties: true }
+        mandate:
+          type: object
+          description: ACH mandate acceptance (ip / user_agent) for server-side confirm.
+          additionalProperties: true
+
+    CreateRefundRequest:
+      type: object
+      properties:
+        amount: { type: integer, minimum: 1, description: Amount to refund in cents. Defaults to the full refundable balance. }
+        reason: { type: string, maxLength: 500 }
+
+    CheckoutSession:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string, example: cs_a1b2c3 }
+        url: { type: string, format: uri, description: The hosted checkout URL. }
+        amount: { $ref: "#/components/schemas/Money" }
+        currency: { type: string, example: usd }
+        status: { type: string, enum: [open, complete, expired] }
+        description: { type: [string, "null"] }
+        customer_email: { type: [string, "null"] }
+        transaction_id: { type: [string, "null"], format: uuid }
+        payment_intent_id: { type: [string, "null"] }
+        expires_at: { type: [string, "null"], format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+        metadata: { type: [object, "null"], additionalProperties: true }
+
+    CreateCheckoutSessionRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount: { type: integer, minimum: 50, description: Amount in cents. }
+        currency: { type: string, minLength: 3, maxLength: 3, default: usd }
+        description: { type: string, maxLength: 500 }
+        customer_email: { type: string, format: email, maxLength: 255 }
+        customer_name: { type: string, maxLength: 255 }
+        success_url: { type: string, format: uri, maxLength: 2000 }
+        cancel_url: { type: string, format: uri, maxLength: 2000 }
+        payment_method_types:
+          type: array
+          items: { type: string, enum: [card, apple_pay, google_pay] }
+        collect_email: { type: boolean }
+        collect_name: { type: boolean }
+        collect_phone: { type: boolean }
+        collect_address: { type: boolean }
+        metadata: { type: object, additionalProperties: true }
+        expires_in: { type: integer, minimum: 300, maximum: 86400, description: Seconds until expiry (5 min – 24 h). }
+
+    PaymentLink:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string, example: pl_a1b2c3 }
+        url: { type: string, format: uri }
+        amount: { $ref: "#/components/schemas/Money" }
+        currency: { type: string, example: USD }
+        status: { type: string, enum: [open, complete, expired] }
+        description: { type: [string, "null"] }
+        customer_email: { type: [string, "null"] }
+        transaction_id: { type: [string, "null"], format: uuid }
+        payment_intent_id: { type: [string, "null"] }
+        success_url: { type: [string, "null"] }
+        cancel_url: { type: [string, "null"] }
+        metadata: { type: [object, "null"], additionalProperties: true }
+        is_test: { type: boolean }
+        expires_at: { type: [string, "null"], format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    CreatePaymentLinkRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount: { type: integer, minimum: 50, description: Amount in cents. }
+        currency: { type: string, minLength: 3, maxLength: 3, default: usd }
+        description: { type: string, maxLength: 500 }
+        customer_email: { type: string, format: email, maxLength: 255 }
+        success_url: { type: string, format: uri, maxLength: 2000 }
+        cancel_url: { type: string, format: uri, maxLength: 2000 }
+        expires_in: { type: integer, minimum: 300, maximum: 7776000, description: Seconds until expiry (5 min – 90 days). }
+        metadata: { type: object, additionalProperties: true }
+
+    Customer:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        external_id: { type: [string, "null"] }
+        name: { type: [string, "null"] }
+        email: { type: [string, "null"] }
+        phone: { type: [string, "null"] }
+        address_line1: { type: [string, "null"] }
+        address_line2: { type: [string, "null"] }
+        city: { type: [string, "null"] }
+        state: { type: [string, "null"] }
+        postal_code: { type: [string, "null"] }
+        country: { type: [string, "null"] }
+        transactions_count: { type: integer, description: Present on list/aggregate responses. }
+        total_spent:
+          allOf: [ { $ref: "#/components/schemas/Money" } ]
+          description: Lifetime spend in cents. Present on aggregate responses.
+        metadata: { type: [object, "null"], additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CustomerWriteRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        name: { type: string, maxLength: 255 }
+        phone: { type: string, maxLength: 50 }
+        external_id: { type: string, maxLength: 255 }
+        address_line1: { type: string, maxLength: 255 }
+        address_line2: { type: string, maxLength: 255 }
+        city: { type: string, maxLength: 100 }
+        state: { type: string, maxLength: 100 }
+        postal_code: { type: string, maxLength: 20 }
+        country: { type: string, maxLength: 2 }
+        metadata: { type: object, additionalProperties: true }
+
+    Payout:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string }
+        status: { type: string, example: paid }
+        amount: { $ref: "#/components/schemas/Money" }
+        fee: { $ref: "#/components/schemas/Money" }
+        net_amount: { $ref: "#/components/schemas/Money" }
+        currency: { type: string, example: USD }
+        destination_type: { type: [string, "null"] }
+        destination_last_four: { type: [string, "null"] }
+        failure_reason: { type: [string, "null"] }
+        is_test: { type: boolean }
+        metadata: { type: [object, "null"], additionalProperties: true }
+        estimated_arrival_at: { type: [string, "null"], format: date-time }
+        arrived_at: { type: [string, "null"], format: date-time }
+        failed_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Dispute:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string }
+        transaction_id: { type: string, format: uuid }
+        status: { type: string, example: open }
+        amount: { $ref: "#/components/schemas/Money" }
+        currency: { type: string, example: USD }
+        reason: { type: [string, "null"] }
+        evidence: { type: [string, "null"] }
+        is_test: { type: boolean }
+        metadata: { type: [object, "null"], additionalProperties: true }
+        evidence_due_at: { type: [string, "null"], format: date-time }
+        resolved_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Terminal:
+      type: object
+      description: A registered card-present reader/terminal.
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string }
+        location_name: { type: [string, "null"] }
+        location_address: { type: [string, "null"] }
+        metadata: { type: [object, "null"], additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Merchant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        business_name: { type: string }
+        email: { type: string }
+        default_currency: { type: string, example: usd }
+        test_mode: { type: boolean }
+
+    WebhookEndpoint:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string, format: uri }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/WebhookEventType" }
+        status: { type: string, enum: [active, disabled] }
+        description: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+
+    WebhookEventType:
+      type: string
+      enum:
+        - payment.created
+        - payment.succeeded
+        - payment.processing
+        - payment.failed
+        - payment.canceled
+        - refund.created
+        - payout.paid
+        - payout.failed
+        - dispute.created
+        - dispute.closed
+        - terminal.connected
+        - terminal.disconnected
+        - customer.created
+        - customer.updated
+        - "*"
+
+    WebhookEvent:
+      type: object
+      properties:
+        id: { type: string }
+        type: { $ref: "#/components/schemas/WebhookEventType" }
+        created: { type: integer, description: Unix timestamp. }
+        data:
+          type: object
+          properties:
+            object:
+              type: object
+              description: The resource the event relates to (Transaction, Payout, Dispute, ...).
