@@ -51,6 +51,90 @@ new PlutoPay({
 
 Authentication is your **secret** key as a Bearer token, set once at construction.
 
+## Using with Next.js / React
+
+The SDK is **server-side** (it holds your secret key). Create the payment on the server, then confirm it on the client with the returned `client_secret` and your **publishable** key.
+
+### 1 · Server — a Next.js Route Handler (App Router)
+
+```ts
+// app/api/checkout/route.ts
+import PlutoPay from '@plutopay/node';
+import { NextResponse } from 'next/server';
+
+const pluto = new PlutoPay({ apiKey: process.env.PLUTOPAY_SECRET_KEY! });
+
+export async function POST(req: Request) {
+  const { amount } = await req.json();
+  const txn = await pluto.transactions.createPayment({
+    createTransactionRequest: { amount, currency: 'usd', paymentMethodType: 'card' },
+    idempotencyKey: crypto.randomUUID(),
+  });
+  return NextResponse.json({ clientSecret: txn.clientSecret });
+}
+```
+
+> In a **Server Action** it's the same — call `pluto.transactions.createPayment(...)` inside the action and return `clientSecret` to the client. Never import `@plutopay/node` into a Client Component; the secret key must stay on the server.
+
+### 2 · Client — a React component with the Payment Element
+
+Card entry uses Stripe.js (`@stripe/stripe-js` + `@stripe/react-stripe-js`) so the card never touches your server (PCI SAQ A). Feed it the `clientSecret` from step 1 and your **publishable** key:
+
+```tsx
+'use client';
+import { loadStripe } from '@stripe/stripe-js';
+import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { useEffect, useState } from 'react';
+
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_PLUTOPAY_PUBLISHABLE_KEY!);
+
+function CheckoutForm() {
+  const stripe = useStripe();
+  const elements = useElements();
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!stripe || !elements) return;
+    await stripe.confirmPayment({
+      elements,
+      confirmParams: { return_url: `${window.location.origin}/thanks` },
+    });
+  };
+  return (
+    <form onSubmit={onSubmit}>
+      <PaymentElement />
+      <button disabled={!stripe}>Pay</button>
+    </form>
+  );
+}
+
+export default function Checkout({ amount }: { amount: number }) {
+  const [clientSecret, setClientSecret] = useState<string>();
+  useEffect(() => {
+    fetch('/api/checkout', { method: 'POST', body: JSON.stringify({ amount }) })
+      .then((r) => r.json())
+      .then((d) => setClientSecret(d.clientSecret));
+  }, [amount]);
+
+  if (!clientSecret) return null;
+  return (
+    <Elements stripe={stripePromise} options={{ clientSecret }}>
+      <CheckoutForm />
+    </Elements>
+  );
+}
+```
+
+The final state arrives by [webhook](https://docs.plutopayus.com/guides/webhooks.html) (`payment.succeeded`) — fulfill the order there, not on the browser redirect.
+
+**Prefer no client code?** Create a hosted checkout on the server and redirect:
+
+```ts
+const session = await pluto.checkout.createCheckoutSession({
+  createCheckoutSessionRequest: { amount: 4750, currency: 'usd', successUrl: `${origin}/thanks` },
+});
+redirect(session.data!.url!); // Next.js redirect()
+```
+
 ## Resources
 
 `pluto.transactions`, `pluto.checkout`, `pluto.paymentLinks`, `pluto.refunds`, `pluto.terminal`, `pluto.customers`, `pluto.payouts`, `pluto.disputes`, `pluto.merchant`.
