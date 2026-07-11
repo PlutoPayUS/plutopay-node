@@ -1,9 +1,12 @@
 name: Publish to npm
 
-# Publishes @plutopay/node on a version tag using npm OIDC trusted publishing —
-# no long-lived NPM_TOKEN, which sidesteps npm's 2FA/token restrictions.
-# One-time setup: on npmjs.com, configure this repo + workflow as a trusted
-# publisher for @plutopay/node.
+# Publishes @plutopay/node on a version tag via npm OIDC trusted publishing —
+# no long-lived NPM_TOKEN (2FA-safe).
+#
+# One-time setup (see README): npm requires a package to exist before trusted
+# publishing can be configured, so the FIRST publish is done manually. After
+# that, configure this repo + workflow as a trusted publisher for @plutopay/node
+# on npmjs.com, and every `vX.Y.Z` tag auto-publishes here.
 on:
   push:
     tags:
@@ -11,7 +14,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # required for OIDC / provenance
+  id-token: write # required for OIDC
 
 jobs:
   publish:
@@ -20,8 +23,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+      - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
       - run: npm ci
       - run: npm test
-      - run: npm publish --provenance --access public
+      - run: npm publish --access public # provenance is automatic under trusted publishing
