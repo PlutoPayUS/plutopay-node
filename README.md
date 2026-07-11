@@ -202,7 +202,7 @@ app.post('/webhooks/plutopay', express.raw({ type: 'application/json' }), (req, 
   try {
     const event = constructEvent(
       req.body.toString('utf8'),
-      req.header('PlutoPay-Signature'),
+      req.header('X-PlutoPay-Signature'),
       process.env.PLUTOPAY_WEBHOOK_SECRET,
     );
     // handle event.type …
